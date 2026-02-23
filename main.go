@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"text/tabwriter"
 	"time"
 )
@@ -166,8 +167,6 @@ func listRecordings(recordingsUrl string) {
 
 	seriesMap := collectRecordings(recordings)
 
-	printSeriesMap(seriesMap)
-
 	oneMap := make(map[string]*SeriesStat)
 	for key, stat := range seriesMap {
 		oneMap[key] = stat
@@ -177,11 +176,28 @@ func listRecordings(recordingsUrl string) {
 }
 
 func printSeriesMap(seriesMap map[string]*SeriesStat) {
+	// 1. Convert the map values into a slice so we can sort them
+	stats := make([]*SeriesStat, 0, len(seriesMap))
+	for _, stat := range seriesMap {
+		stats = append(stats, stat)
+	}
+
+	// 2. Sort the slice by TotalSize in descending order
+	slices.SortFunc(stats, func(a, b *SeriesStat) int {
+		if a.TotalSize > b.TotalSize {
+			return 1
+		} else if a.TotalSize < b.TotalSize {
+			return -1
+		}
+		return 0
+	})
+
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "SERIES TITLE\tEPISODES\tSTORAGE USED\t")
 	fmt.Fprintln(w, "------------\t--------\t------------\t")
 
-	for _, stat := range seriesMap {
+	// 3. Iterate over the sorted slice instead of the map
+	for _, stat := range stats {
 		sizeGB := float64(stat.TotalSize) / (1024 * 1024 * 1024)
 		fmt.Fprintf(w, "%s\t%d\t%.2f GB\t\n", stat.Title, stat.Count, sizeGB)
 	}
@@ -189,7 +205,6 @@ func printSeriesMap(seriesMap map[string]*SeriesStat) {
 
 	fmt.Printf("\nTotal Series Found: %d\n", len(seriesMap))
 }
-
 func collectRecordings(recordings []Recording) map[string]*SeriesStat {
 	seriesMap := make(map[string]*SeriesStat)
 	for _, rec := range recordings {
