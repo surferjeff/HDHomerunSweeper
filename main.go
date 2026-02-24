@@ -117,15 +117,24 @@ func deleteSeries(title string, forever bool) {
 			commandUrls = append(commandUrls, episode.CmdURL)
 		}
 	}
-	for _, commandUrl := range commandUrls {
+
+	client := http.Client{Timeout: 5 * time.Second}
+	fmt.Println("Deleting episodes... ")
+	for i, commandUrl := range commandUrls {
 		rerecord := 1
 		if forever {
 			rerecord = 0
 		}
 		url := fmt.Sprintf("%s&cmd=delete&rerecord=%d", commandUrl, rerecord)
-		fmt.Println(url)
+		fmt.Printf("%d ", i+1)
+		resp, err := client.Post(url, "text/plain", nil)
+		resp.Body.Close()
+		if err != nil {
+			fmt.Printf("Error posting to %s: %v", url, err)
+			return
+		}
 	}
-
+	fmt.Println("Done.")
 }
 
 func printUsage() {
