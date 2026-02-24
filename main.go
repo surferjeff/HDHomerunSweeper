@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"text/tabwriter"
 	"time"
 )
@@ -43,37 +44,26 @@ func main() {
 	}
 
 	// Subcommands
-	listCmd := flag.NewFlagSet("list", flag.ExitOnError)
-	// delEpCmd := flag.NewFlagSet("delete-episode", flag.ExitOnError)
-	// delSerCmd := flag.NewFlagSet("delete-series", flag.ExitOnError)
+	listCommand := flag.NewFlagSet("list", flag.ExitOnError)
+	deleteSeriesCommand := flag.NewFlagSet("delete-series", flag.ExitOnError)
 
-	// Flags for subcommands (IP flags removed)
-	// delEpID := delEpCmd.String("id", "", "RecordID of the episode to delete (required)")
-	// delSerTitle := delSerCmd.String("title", "", "Exact title of the series to delete (required)")
+	// Flags for subcommands
+	deleteSeriesTitle := deleteSeriesCommand.String("title", "", "A unique prefix of the title of the series to delete (required)")
+	deleteSeriesForever := deleteSeriesCommand.Bool("forever", false, "Never attempt to rerecord the episodes being deleted.")
 
 	switch os.Args[1] {
 	case "list":
-		listCmd.Parse(os.Args[2:])
+		listCommand.Parse(os.Args[2:])
 		storageUrl := getStorageUrlOrExit()
 		listRecordings(storageUrl)
 
-	// case "delete-episode":
-	// 	delEpCmd.Parse(os.Args[2:])
-	// 	if *delEpID == "" {
-	// 		delEpCmd.PrintDefaults()
-	// 		os.Exit(1)
-	// 	}
-	// 	ip := getIPOrExit()
-	// 	deleteEpisode(ip, *delEpID)
-
-	// case "delete-series":
-	// 	delSerCmd.Parse(os.Args[2:])
-	// 	if *delSerTitle == "" {
-	// 		delSerCmd.PrintDefaults()
-	// 		os.Exit(1)
-	// 	}
-	// 	ip := getIPOrExit()
-	// 	deleteSeries(ip, *delSerTitle)
+	case "delete-series":
+		deleteSeriesCommand.Parse(os.Args[2:])
+		if *deleteSeriesTitle == "" {
+			deleteSeriesCommand.PrintDefaults()
+			os.Exit(1)
+		}
+		deleteSeries(*deleteSeriesTitle, *deleteSeriesForever)
 
 	default:
 		fmt.Println("Unknown command.")
@@ -82,12 +72,47 @@ func main() {
 	}
 }
 
+func deleteSeries(title string, forever bool) {
+	storageUrl := getStorageUrlOrExit()
+
+	recordings, err := fetchRecordings(storageUrl)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+
+	var deleteRecordings []Recording
+	for _, recording := range recordings {
+		if strings.HasPrefix(recording.Title, title) {
+			if len(deleteRecordings) > 0 {
+				fmt.Printf("More than one title matches '%s':\n%s\n%s\n",
+					title, deleteRecordings[0].Title, recording.Title)
+				return
+			}
+			deleteRecordings = append(deleteRecordings, recording)
+		}
+	}
+
+	if 0 == len(deleteRecordings) {
+		fmt.Printf("Nothing matches '%s'\n", title)
+		return
+	}
+
+	seriesMap := collectRecordings(recordings)
+
+	oneMap := make(map[string]*SeriesStat)
+	for key, stat := range seriesMap {
+		oneMap[key] = stat
+		aggregateStats(stat)
+	}
+
+}
+
 func printUsage() {
 	fmt.Println("HDHomeRun DVR CLI")
 	fmt.Println("Usage:")
 	fmt.Println("  hdhr-cli list")
-	fmt.Println("  hdhr-cli delete-episode --id <record_id>")
-	fmt.Println("  hdhr-cli delete-series --title \"Series Title\"")
+	fmt.Println("  hdhr-cli delete-series --title \"Series Title\"  --forever")
 }
 
 // getStorageUrlOrExit wraps the discovery logic and terminates if it fails
@@ -158,8 +183,8 @@ func fetchRecordings(recordingsUrl string) ([]Recording, error) {
 	return recordings, nil
 }
 
-func listRecordings(recordingsUrl string) {
-	recordings, err := fetchRecordings(recordingsUrl)
+func listRecordings(storageUrl string) {
+	recordings, err := fetchRecordings(storageUrl)
 	if err != nil {
 		fmt.Println("Error:", err)
 		return
@@ -205,6 +230,7 @@ func printSeriesMap(seriesMap map[string]*SeriesStat) {
 
 	fmt.Printf("\nTotal Series Found: %d\n", len(seriesMap))
 }
+
 func collectRecordings(recordings []Recording) map[string]*SeriesStat {
 	seriesMap := make(map[string]*SeriesStat)
 	for _, rec := range recordings {
@@ -218,8 +244,6 @@ func collectRecordings(recordings []Recording) map[string]*SeriesStat {
 
 		series.Count++
 		series.EpisodesURLs = append(series.EpisodesURLs, rec.EpisodesURL)
-		// seriesMap[rec.Title].TotalSize += rec.FileSize
-
 	}
 	return seriesMap
 }
@@ -228,25 +252,9 @@ func aggregateStats(stat *SeriesStat) error {
 	stat.Count = 0
 	stat.TotalSize = 0
 	for _, url := range stat.EpisodesURLs {
-		client := http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Get(url)
-		if err != nil {
-			return fmt.Errorf("Failed to fetch %v: %w", url, err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("%v returned status %d", url, resp.StatusCode)
-		}
-
-		body, err := io.ReadAll(resp.Body)
+		episodes, err := getEpisodes(url)
 		if err != nil {
 			return err
-		}
-
-		var episodes []Episode
-		if err := json.Unmarshal(body, &episodes); err != nil {
-			return fmt.Errorf("failed to parse episode JSON: %w", err)
 		}
 
 		for _, episode := range episodes {
@@ -259,6 +267,30 @@ func aggregateStats(stat *SeriesStat) error {
 		}
 	}
 	return nil
+}
+
+func getEpisodes(url string) ([]Episode, error) {
+	client := http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to fetch %v: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%v returned status %d", url, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var episodes []Episode
+	if err := json.Unmarshal(body, &episodes); err != nil {
+		return nil, fmt.Errorf("failed to parse episode JSON: %w", err)
+	}
+	return episodes, nil
 }
 
 func getEpisodeSize(playUrl string) (int64, error) {
@@ -275,3 +307,8 @@ func getEpisodeSize(playUrl string) (int64, error) {
 
 	return resp.ContentLength, nil
 }
+
+/*
+HTTP	544	POST /recorded/cmd?id=e2a5d6b199c2be7f&cmd=delete&rerecord=0 HTTP/1.1
+HTTP	544	POST /recorded/cmd?id=fd3c41514da2c1a2&cmd=delete&rerecord=1 HTTP/1.1
+*/
