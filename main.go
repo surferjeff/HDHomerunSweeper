@@ -84,11 +84,6 @@ func deleteSeries(title string, forever bool) {
 	var deleteRecordings []Recording
 	for _, recording := range recordings {
 		if strings.HasPrefix(recording.Title, title) {
-			if len(deleteRecordings) > 0 {
-				fmt.Printf("More than one title matches '%s':\n%s\n%s\n",
-					title, deleteRecordings[0].Title, recording.Title)
-				return
-			}
 			deleteRecordings = append(deleteRecordings, recording)
 		}
 	}
@@ -98,12 +93,37 @@ func deleteSeries(title string, forever bool) {
 		return
 	}
 
-	seriesMap := collectRecordings(recordings)
+	if len(deleteRecordings) > 1 {
+		fmt.Printf("More than one title matches '%s':\n", title)
+		for _, recording := range deleteRecordings {
+			fmt.Println(recording.Title)
+		}
+		return
+	}
 
-	oneMap := make(map[string]*SeriesStat)
-	for key, stat := range seriesMap {
-		oneMap[key] = stat
-		aggregateStats(stat)
+	seriesMap := collectRecordings(deleteRecordings)
+	var episodesUrls []string
+	for _, stat := range seriesMap {
+		episodesUrls = append(episodesUrls, stat.EpisodesURLs...)
+	}
+	var commandUrls []string
+	for _, episodeUrl := range episodesUrls {
+		episodes, err := getEpisodes(episodeUrl)
+		if nil != err {
+			fmt.Println("Error:", err)
+			return
+		}
+		for _, episode := range episodes {
+			commandUrls = append(commandUrls, episode.CmdURL)
+		}
+	}
+	for _, commandUrl := range commandUrls {
+		rerecord := 1
+		if forever {
+			rerecord = 0
+		}
+		url := fmt.Sprintf("%s&cmd=delete&rerecord=%d", commandUrl, rerecord)
+		fmt.Println(url)
 	}
 
 }
